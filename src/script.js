@@ -1,4 +1,76 @@
+const drawVS = `
+    attribute vec4 position;
+
+    void main() {
+        gl_Position = position;
+    }
+`;
+
+const drawFS = `
+    precision highp float;
+
+    uniform vec2 resolution;
+    uniform sampler2D tex;
+    void main() { 
+        vec2 texcoord = gl_FragCoord.xy / resolution.xy;
+        vec4 colour = texture2D(tex, texcoord);
+        gl_FragColor = colour;
+    }
+`;
+
+function randomData(bufferSize) {
+    const data = new Float32Array(bufferSize * 4);
+    for (let i = 0; i < data.length; i=i+4) {
+
+        data[i] = i/10 % 1;
+        data[i + 1] = 0.0;
+        data[i + 2] = 0.0;
+        data[i + 3] = 1.0;
+    }
+
+    return data;
+}
+
 function main() {
+    const width = 1024;
+    const height = 1024;
+
+    let resolution = [window.innerWidth, window.innerHeight];
+    const canvas = document.querySelector("#canvas");
+    canvas.width = resolution[0];
+    canvas.height = resolution[1];
+
+    const process = new WebGlProcess (width, height, canvas, {premultipliedAlpha:false, antialias: true});
+
+    const gl = process.getGLContext();
+    const check = process.getExtensions();
+
+    const program = process.createProgram(drawVS, drawFS);
+
+    const texture = process.createTexture(width, height, WebGLRenderingContext.FLOAT, randomData(width * height));
+
+    if(check) {
+        const render = () => {
+            gl.useProgram(program);
+            process.createStandardGeometry(program);
+
+            const textureHandle = gl.getUniformLocation(program, 'tex');
+            const resolutionHandle = gl.getUniformLocation(program, 'resolution');
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+            gl.uniform1i(textureHandle, 0);
+            gl.uniform2fv(resolutionHandle, resolution);
+
+            gl.viewport(0, 0, resolution[0], resolution[1]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+
+        render();
+    }
 } 
 
 window.onload = main;
