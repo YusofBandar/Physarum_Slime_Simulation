@@ -1,3 +1,169 @@
+const agentsProcessVS = `
+    attribute vec4 position;
+
+    void main() {
+        gl_Position = position;
+    }
+`;
+
+const agentsProcessFS = `
+    precision highp float;
+
+    uniform float moveSpeed;
+    uniform float turnSpeed;
+    uniform float sensorAngleSpacing;
+
+    uniform float sensorSize;
+    uniform float sensorOffsetDist;
+
+    uniform float time;
+    uniform float deltaTime;
+
+    uniform vec2 agents_resolution;
+    uniform sampler2D agents_buffer;
+
+    uniform sampler2D trail_map;
+    uniform vec2 resolution;
+
+    #define PI radians(180.0)
+
+    float random (vec2 st) {
+        return fract(sin(dot(st.xy, vec2(12.9898,78.233)))* 43758.5453123);
+    }
+
+    float hash(float p) {
+        vec2 p2 = fract(vec2(p * 5.3983, p * 5.4427));
+        p2 += dot(p2.yx, p2.xy + vec2(21.5351, 14.3137));
+        return fract(p2.x * p2.y * 95.4337);
+    }
+
+    float sense(vec2 position, float sensorAngle) {
+        vec2 sensorDir = vec2(cos(sensorAngle), sin(sensorAngle));
+        vec2 sensorCenter = position + sensorDir * sensorOffsetDist;
+        vec2 sensorUV = sensorCenter / resolution;
+        vec4 s = texture2D(trail_map, sensorUV, sensorSize);
+        return s.r;
+    }
+
+    void main() { 
+        float vertexId = floor(gl_FragCoord.y * agents_resolution.x + gl_FragCoord.x);
+        vec2 texcoord = gl_FragCoord.xy / agents_resolution.xy;
+        float randomNum = hash(vertexId / (agents_resolution.x * agents_resolution.y) + time);
+
+        vec4 agent = texture2D(agents_buffer, texcoord);
+
+        vec2 position = agent.xy;
+        float angle = agent.z;
+
+        float weightForward = sense(position, angle);
+        float weightLeft = sense(position, angle + sensorAngleSpacing);
+        float weightRight = sense(position, angle - sensorAngleSpacing);
+
+        // continue in same direction
+        if (weightForward > weightLeft && weightForward > weightRight) {
+            angle += 0.0;
+        } else if (weightForward < weightLeft && weightForward < weightRight) {
+            angle += (randomNum - 0.5) * 2.0 * turnSpeed * deltaTime;
+        } else if (weightRight > weightLeft) {
+            angle -= randomNum * turnSpeed * deltaTime;
+        } else if (weightLeft > weightRight) {
+            angle += randomNum * turnSpeed * deltaTime;
+        }
+
+        vec2 direction = vec2(cos(angle), sin(angle));
+        vec2 newPos = position + direction * moveSpeed * deltaTime;
+
+        // clamp to boundries and pick new angle if hit boundries
+        if (newPos.x < 0.0 || newPos.x >= resolution.x || 
+            newPos.y < 0.0 || newPos.y >= resolution.y) {
+            newPos.x = min(resolution.x - 0.01, max(0.0, newPos.x));
+            newPos.y = min(resolution.y - 0.01, max(0.0, newPos.y));
+            angle = randomNum * 2.0 * PI;
+        }
+
+        gl_FragColor = vec4(newPos, angle, 0);
+    }
+`;
+
+const trailProcessVS = `
+    attribute float position;
+
+    uniform vec2 agents_resolution;
+    uniform sampler2D agents_buffer;
+
+    uniform float trailWeight;
+
+    uniform vec2 resolution;
+
+    uniform float deltaTime;
+
+    varying vec4 v_colour;
+
+    void main() {
+        vec2 uv = (vec2(
+            mod(position, agents_resolution.x),
+            floor(position / agents_resolution.x)
+            ) + 0.5) / agents_resolution;
+
+        vec2 position1 = texture2D(agents_buffer, uv).xy;
+
+        gl_Position = vec4(position1 / resolution * 2.0 - 1.0, 0, 1);
+        gl_PointSize = 1.0;
+
+        v_colour = vec4(vec3(trailWeight * deltaTime), 1);
+    }
+`;
+
+const trailProcessFS = `
+    precision highp float;
+    varying vec4 v_colour;
+
+    void main() { 
+        gl_FragColor = v_colour;
+    }
+`;
+
+const fadeProcessVS = `
+    attribute vec4 position;
+
+    void main() {
+        gl_Position = position;
+    }
+`;
+
+const fadeProcessFS = `
+    precision highp float;
+
+    uniform vec2 resolution;
+    uniform sampler2D tex;
+
+    uniform float evaporateSpeed;
+    uniform float diffuseSpeed;
+
+    uniform float deltaTime;
+
+    void main() { 
+        vec2 texcoord = gl_FragCoord.xy / resolution.xy;
+        vec4 originalValue = texture2D(tex, texcoord);
+
+        // Simulate diffuse with a simple 3x3 blur
+        vec4 sum;
+        for (int offsetY = -1; offsetY <= 1; ++offsetY) {
+            for (int offsetX = -1; offsetX <= 1; ++offsetX) {
+                vec2 sampleOff = vec2(offsetX, offsetY) / resolution;
+                sum += texture2D(tex, texcoord + sampleOff);
+            }
+        }
+
+        vec4 blurResult = sum / 9.0;
+
+        vec4 diffusedValue = mix(originalValue, blurResult, diffuseSpeed * deltaTime);
+        vec4 diffusedAndEvaporatedValue = max(vec4(0), diffusedValue - evaporateSpeed * deltaTime);
+
+        gl_FragColor = vec4(diffusedAndEvaporatedValue.rgb, 1);
+    }
+`;
+
 const drawVS = `
     attribute vec4 position;
 
@@ -18,62 +184,292 @@ const drawFS = `
     }
 `;
 
-function randomData(bufferSize) {
-    const data = new Float32Array(bufferSize * 4);
-    for (let i = 0; i < data.length; i=i+4) {
+/*
+    window.moveSpeed = 85;
+    window.turnSpeed = 76;
+    window.trailWeight = 60;
+    window.sensorOffsetDist = 40;
+    window.sensorAngleSpacing = 1;
+    window.sensorSize = 1;
+    window.evaporateSpeed = 2.0;
+    window.diffuseSpeed = 60;
+*/
 
-        data[i] = i/10 % 1;
-        data[i + 1] = 0.0;
-        data[i + 2] = 0.0;
-        data[i + 3] = 1.0;
-    }
+/*
+    window.moveSpeed = 100;
+    window.turnSpeed = 20;
+    window.trailWeight = 60;
+    window.sensorOffsetDist = 30;
+    window.sensorAngleSpacing = 30;
+    window.sensorSize = 70;
+    window.evaporateSpeed = 20.0;
+    window.diffuseSpeed = 80;
+*/
 
-    return data;
-}
+window.moveSpeed = 85;
+window.turnSpeed = 76;
+window.trailWeight = 60;
+window.sensorOffsetDist = 11;
+window.sensorAngleSpacing = 1;
+window.sensorSize = 5;
+window.evaporateSpeed = 2.0;
+window.diffuseSpeed = 40;
 
 function main() {
+    const count = 1000000;
     const width = 1024;
     const height = 1024;
+
 
     let resolution = [window.innerWidth, window.innerHeight];
     const canvas = document.querySelector("#canvas");
     canvas.width = resolution[0];
     canvas.height = resolution[1];
 
+
     const process = new WebGlProcess (width, height, canvas, {premultipliedAlpha:false, antialias: true});
+    const draw = new WebGlProcess (width, height, canvas, {premultipliedAlpha:false, antialias: true});
 
     const gl = process.getGLContext();
     const check = process.getExtensions();
 
-    const program = process.createProgram(drawVS, drawFS);
-
-    const texture = process.createTexture(width, height, WebGLRenderingContext.FLOAT, randomData(width * height));
+    window.play = true;
 
     if(check) {
-        const render = () => {
-            gl.useProgram(program);
-            process.createStandardGeometry(program);
+        const processProgram = process.createProgram(agentsProcessVS, agentsProcessFS);
+        const trailProgram = draw.createProgram(trailProcessVS, trailProcessFS);
+        const fadeProgram = draw.createProgram(fadeProcessVS, fadeProcessFS);
+        const drawProgram = draw.createProgram(drawVS, drawFS);
 
-            const textureHandle = gl.getUniformLocation(program, 'tex');
-            const resolutionHandle = gl.getUniformLocation(program, 'resolution');
+        const agents1 = process.createTexture(width, height, WebGLRenderingContext.FLOAT, createCircleInAgents(width * height, resolution, count));
+        const agents2 = process.createTexture(width, height, WebGLRenderingContext.FLOAT, agentsEmptyData(width * height));
+        const trailMap1 = process.createTexture(resolution[0], resolution[1], WebGLRenderingContext.FLOAT, agentsEmptyData(resolution[0] * resolution[1]));
+        const trailMap2 = process.createTexture(resolution[0], resolution[1], WebGLRenderingContext.FLOAT, agentsEmptyData(resolution[0] * resolution[1]));
 
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, texture);
+        let source = agents1;
+        let destination = agents2;
 
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        let trailMapSource = trailMap1;
+        let trailMapDestination = trailMap2;
 
-            gl.uniform1i(textureHandle, 0);
-            gl.uniform2fv(resolutionHandle, resolution);
+        const render = (time) => {
+            if(window.play) {
+                time *= 0.001;
 
-            gl.viewport(0, 0, resolution[0], resolution[1]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                resolution = [window.innerWidth, window.innerHeight];
+
+                drawProcessProgram(gl, process, processProgram, source, destination, trailMapSource, width, height, resolution, time);
+
+                //process trailMap
+                drawTrailProcessProgram(gl, process, trailProgram, destination, trailMapSource, count, width, height, resolution);
+
+                // fade trailMap
+                drawTrialMapProgram(gl, process, fadeProgram, trailMapSource, trailMapDestination, resolution);
+
+
+                // draw agents
+                drawAgentsProgram(gl, process, drawProgram, trailMapDestination, resolution);
+
+                source = source === agents2 ? agents1 : agents2;
+                destination = destination === agents2 ? agents1 : agents2;
+
+                trailMapSource = trailMapSource === trailMap2 ? trailMap1 : trailMap2;
+                trailMapDestination = trailMapDestination === trailMap2 ? trailMap1 : trailMap2;
+
+            }
+
+            requestAnimationFrame(render);
         }
 
-        render();
+        requestAnimationFrame(render);
+
+    }else {
+        console.error('Floating point textures are not supported.');
     }
 } 
 
+function agentsEmptyData(bufferSize) {
+    const data = new Float32Array(bufferSize * 4);
+    for (let i = 0; i < data.length; i=i+4) {
+
+        data[i] = 0.0;
+        data[i + 1] = 0.0;
+        data[i + 2] = 0.0;
+        data[i + 3] = 0.0;
+    }
+
+    return data;
+}
+
+function agentsPositionData(bufferSize, resolution) {
+    const data = new Float32Array(bufferSize * 4);
+    for (let i = 0; i < data.length; i=i+4) {
+        data[i + 0] = resolution[0] / 2;
+        data[i + 1] = resolution[1] / 2;
+        data[i + 2] = getRandomArbitrary(0, 7);
+        data[i + 3] = 0.0;
+    }
+
+    return data;
+}
+
+
+function createCircleInAgents(bufferSize, resolution) {
+    const data = new Float32Array(bufferSize * 4);
+    const radius = Math.min(resolution[0], resolution[1]) / 2;
+
+    for (let i = 0; i < data.length; i=i+4) {
+        const angle = getRandomArbitrary(0, Math.PI * 2);
+        const r = Math.sqrt(getRandomArbitrary(0, 1)) * radius; //Math.sqrt(rand(1)) ∗ radius;
+
+        data[i + 0] = resolution[0] / 2 + Math.cos(angle) * r;
+        data[i + 1] = resolution[1] / 2 + Math.sin(angle) * r;
+        data[i + 2] = angle + Math.PI;
+        data[i + 3] = 0.0;
+    }
+
+
+    return data;
+};
+
+const drawProcessProgram = (gl, process, program, agentsSource, agentsDestination, trailMapSource, width, height, resolution, time) => {
+    const deltaTime = 1 / 60;  // note: we don't really want this to be framerate independent.
+
+    // process agents
+    gl.useProgram(program);
+    process.createStandardGeometry(program);
+
+    const timeHandle = gl.getUniformLocation(program, 'time');
+
+    const agentsResHandle = gl.getUniformLocation(program, 'agents_resolution');
+    const agentsHandle = gl.getUniformLocation(program, 'agents_buffer');
+
+    const moveSpeed = gl.getUniformLocation(program, 'moveSpeed');
+    const turnSpeed = gl.getUniformLocation(program, 'turnSpeed');
+    const sensorAngleSpacing = gl.getUniformLocation(program, 'sensorAngleSpacing');
+    const sensorSize = gl.getUniformLocation(program, 'sensorSize');
+    const sensorOffsetDist = gl.getUniformLocation(program, 'sensorOffsetDist');
+
+    const resolutionHandle = gl.getUniformLocation(program, 'resolution');
+
+    const trailMapHandle = gl.getUniformLocation(program, 'trail_map');
+
+    const deltaTimeHandle = gl.getUniformLocation(program, 'deltaTime');
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, agentsSource);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, trailMapSource);
+
+    process.attachFrameBuffer(agentsDestination);
+
+    gl.uniform1f(timeHandle, time);
+
+    gl.uniform2fv(agentsResHandle, [width, height]);
+    gl.uniform1i(agentsHandle, 0);
+
+    gl.uniform1f(moveSpeed, window.moveSpeed);
+    gl.uniform1f(turnSpeed, window.turnSpeed);
+    gl.uniform1f(sensorAngleSpacing, window.sensorAngleSpacing);
+    gl.uniform1f(sensorSize, window.sensorSize);
+    gl.uniform1f(sensorOffsetDist, window.sensorOffsetDist);
+
+    gl.uniform2fv(resolutionHandle, resolution);
+
+    gl.uniform1i(trailMapHandle, 1);
+
+    gl.uniform1f(deltaTimeHandle, deltaTime);
+
+    gl.viewport(0, 0, width, height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+const drawTrailProcessProgram = (gl, process, program, agentsDestination, trailMapSource, count, width, height, resolution) => {
+    const deltaTime = 1 / 60;  // note: we don't really want this to be framerate independent.
+
+    gl.useProgram(program);
+    process.createBufferGeometry(program, width, height);
+
+    const agentsResHandle = gl.getUniformLocation(program, 'agents_resolution');
+    const agentsHandle = gl.getUniformLocation(program, 'agents_buffer');
+
+    const trailWeight = gl.getUniformLocation(program, 'trailWeight');
+
+    const resolutionHandle = gl.getUniformLocation(program, 'resolution');
+
+    const deltaTimeHandle = gl.getUniformLocation(program, 'deltaTime');
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, agentsDestination);
+
+    process.attachFrameBuffer(trailMapSource);
+
+    gl.uniform2fv(agentsResHandle, [width, height]);
+    gl.uniform1i(agentsHandle, 0);
+
+    gl.uniform1f(trailWeight, window.trailWeight);
+
+    gl.uniform2fv(resolutionHandle, resolution);
+
+    gl.uniform1f(deltaTimeHandle, deltaTime);
+
+    gl.viewport(0, 0, resolution[0], resolution[1]);
+    gl.drawArrays(gl.POINTS, 0, count);
+}
+
+const drawTrialMapProgram = (gl, process, program, trailMapSource, trailMapDestination, resolution) => {
+    const deltaTime = 1 / 60;  // note: we don't really want this to be framerate independent.
+
+    gl.useProgram(program);
+    process.createStandardGeometry(program);
+
+    const trailMapHandle = gl.getUniformLocation(program, 'tex');
+    const trailMapResHandle = gl.getUniformLocation(program, 'resolution');
+
+    const evaporateSpeed = gl.getUniformLocation(program, 'evaporateSpeed');
+    const diffuseSpeed = gl.getUniformLocation(program, 'diffuseSpeed');
+
+    const deltaTimeHandle = gl.getUniformLocation(program, 'deltaTime');
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, trailMapSource);
+
+    process.attachFrameBuffer(trailMapDestination);
+
+    gl.uniform1i(trailMapHandle, 0);
+    gl.uniform2fv(trailMapResHandle, resolution);
+
+    gl.uniform1f(evaporateSpeed, window.evaporateSpeed);
+    gl.uniform1f(diffuseSpeed, window.diffuseSpeed);
+
+    gl.uniform1f(deltaTimeHandle, deltaTime);
+
+    gl.viewport(0, 0, resolution[0], resolution[1]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+const drawAgentsProgram = (gl, process, program, trailMapDestination, resolution) => {
+    gl.useProgram(program);
+    process.createStandardGeometry(program);
+
+    const textureHandle = gl.getUniformLocation(program, 'tex');
+    const resolutionHandle = gl.getUniformLocation(program, 'resolution');
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, trailMapDestination);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    gl.uniform1i(textureHandle, 0);
+    gl.uniform2fv(resolutionHandle, resolution);
+
+    gl.viewport(0, 0, resolution[0], resolution[1]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
 window.onload = main;
+
 
 const WebGlProcess = class {
     defaultAttributes = { alpha: false, depth: false, antialias: false };
@@ -271,4 +667,9 @@ const WebGlProcess = class {
         return program;
     };
 
+};
+
+function getRandomArbitrary(min, max) {
+  return Math.random() * (max - min) + min;
 }
+
